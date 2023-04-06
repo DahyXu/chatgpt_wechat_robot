@@ -128,3 +128,129 @@ func httpRequestCompletions(msg string, runtimes int) (*ChatGPTResponseBody, err
 	}
 	return gptResponseBody, nil
 }
+
+
+
+
+// gpt3.5的 请求体
+type ChatGPTResponseBodyNew struct {
+	ID      string                 `json:"id"`
+	Object  string                 `json:"object"`
+	Created int                    `json:"created"`
+	Model   string                 `json:"model"`
+	Choices []ChoiceItemNew        `json:"choices"`
+	Usage   map[string]interface{} `json:"usage"`
+	Error   struct {
+		Message string      `json:"message"`
+		Type    string      `json:"type"`
+		Param   interface{} `json:"param"`
+		Code    interface{} `json:"code"`
+	} `json:"error"`
+}
+
+type ChoiceItemNew struct {
+	Index        int    				`json:"index"`
+	Message      struct {
+		Role 	string 			  `json:"role"`
+		Content string 			  `json:"content"`
+	}
+	FinishReason        string    `json:"finish_reason"`
+}
+
+// ChatGPTRequestBody 响应体
+type ChatGPTRequestBodyNew struct {
+	Model            string  		 	`json:"model"`
+	Messages         []MessagesItem  	`json:"messages"`
+	MaxTokens        uint    			`json:"max_tokens"`
+	Temperature      float64 			`json:"temperature"`
+	TopP             int     			`json:"top_p"`
+	FrequencyPenalty int     			`json:"frequency_penalty"`
+	PresencePenalty  int     			`json:"presence_penalty"`
+}
+
+type MessagesItem struct {
+	Role 			string				`json:"role"`
+	Content			string				`json:"content"`
+}
+
+// chats gtp文本模型回复
+//curl https://api.openai.com/v1/chat/completions
+//-H "Content-Type: application/json"
+//-H "Authorization: Bearer your chatGPT key"
+//-d '{"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello!"}], "temperature": 0, "max_tokens": 7}'
+func Chats(msg string) (string, error) {
+	var gptResponseBody *ChatGPTResponseBodyNew
+	var resErr error
+	for retry := 1; retry <= 3; retry++ {
+		if retry > 1 {
+			time.Sleep(time.Duration(retry-1) * 100 * time.Millisecond)
+		}
+		gptResponseBody, resErr = httpRequestChats(msg, retry)
+		if resErr != nil {
+			log.Printf("gpt request(%d) error: %v\n", retry, resErr)
+			continue
+		}
+		if gptResponseBody.Error.Message == "" {
+			break
+		}
+	}
+	if resErr != nil {
+		return "", resErr
+	}
+	var reply string
+	if gptResponseBody != nil && len(gptResponseBody.Choices) > 0 {
+		reply = gptResponseBody.Choices[0].Message.Content
+	}
+	return reply, nil
+}
+
+func httpRequestChats(msg string, runtimes int) (*ChatGPTResponseBodyNew, error) {
+	cfg := config.LoadConfig()
+	if cfg.ApiKey == "" {
+		return nil, errors.New("api key required")
+	}
+
+	requestBody := ChatGPTRequestBodyNew{
+		Model:            cfg.Model,
+		Messages:           []MessagesItem{{Role:"user", Content:msg}},
+		MaxTokens:        cfg.MaxTokens,
+		Temperature:      cfg.Temperature,
+		TopP:             1,
+		FrequencyPenalty: 0,
+		PresencePenalty:  0,
+	}
+	requestData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("json.Marshal requestBody error: %v", err)
+	}
+
+	log.Printf("gpt request(%d) json: %s\n", runtimes, string(requestData))
+
+	req, err := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(requestData))
+	if err != nil {
+		return nil, fmt.Errorf("http.NewRequest error: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.ApiKey)
+	client := &http.Client{Timeout: 15 * time.Second}
+	response, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("client.Do error: %v", err)
+	}
+	defer response.Body.Close()
+
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("ioutil.ReadAll error: %v", err)
+	}
+
+	log.Printf("gpt response(%d) json: %s\n", runtimes, string(body))
+
+	gptResponseBody := &ChatGPTResponseBodyNew{}
+	err = json.Unmarshal(body, gptResponseBody)
+	if err != nil {
+		return nil, fmt.Errorf("json.Marshal responseBody error: %v", err)
+	}
+	return gptResponseBody, nil
+}
